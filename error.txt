@@ -1,0 +1,267 @@
+2026-02-24 06:29:51,594 — INFO — Compressed chunk 162 in 5.88s
+
+
+2026-02-24 06:29:53,388 — INFO — Compressed chunk 163 in 6.02s
+
+
+2026-02-24 06:29:54,637 — INFO — Compressed chunk 164 in 5.15s
+
+
+2026-02-24 06:29:56,570 — INFO — Compressed chunk 167 in 1.73s
+
+
+2026-02-24 06:29:57,362 — INFO — Compressed chunk 165 in 5.57s
+
+
+2026-02-24 06:29:59,750 — INFO — Compressed chunk 166 in 6.16s
+
+
+2026-02-24 06:30:03,066 — INFO — Compressed chunk 169 in 5.50s
+
+
+2026-02-24 06:30:03,492 — INFO — Compressed chunk 168 in 6.72s
+
+
+2026-02-24 06:30:05,007 — INFO — Compressed chunk 171 in 1.74s
+
+
+2026-02-24 06:30:06,160 — INFO — Compressed chunk 170 in 6.21s
+
+
+2026-02-24 06:30:08,700 — INFO — Compressed chunk 173 in 3.49s
+
+
+2026-02-24 06:30:10,478 — INFO — Compressed chunk 172 in 6.79s
+
+
+2026-02-24 06:30:10,900 — INFO — Compressed chunk 175 in 2.00s
+
+
+2026-02-24 06:30:12,674 — INFO — Compressed chunk 174 in 6.31s
+
+
+2026-02-24 06:30:12,674 — INFO — Combined summary length: 624142 chars
+
+
+2026-02-24 06:33:49,308 — INFO — [WEB] Scraping URL: Not found url
+
+
+INFO:     162.26.0.1:52308 - "POST /extract HTTP/1.1" 500 Internal Server Error
+
+
+ERROR:    Exception in ASGI application
+
+
+Traceback (most recent call last):
+
+
+  File "/usr/local/lib/python3.11/site-packages/uvicorn/protocols/http/h11_impl.py", line 410, in run_asgi
+
+
+    result = await app(  # type: ignore[func-returns-value]
+
+
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+
+
+    return await self.app(scope, receive, send)
+
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/site-packages/fastapi/applications.py", line 1134, in __call__
+
+
+    await super().__call__(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/applications.py", line 107, in __call__
+
+
+    await self.middleware_stack(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+
+
+    raise exc
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+
+
+    await self.app(scope, receive, _send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/middleware/cors.py", line 87, in __call__
+
+
+    await self.app(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+
+
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+
+
+    raise exc
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+
+
+    await app(scope, receive, sender)
+
+
+  File "/usr/local/lib/python3.11/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+
+
+    await self.app(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+
+
+    await self.middleware_stack(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+
+
+    await route.handle(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+
+
+    await self.app(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 119, in app
+
+
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+
+
+    raise exc
+
+
+  File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+
+
+    await app(scope, receive, sender)
+
+
+  File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 105, in app
+
+
+    response = await f(request)
+
+
+               ^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 424, in app
+
+
+    raw_response = await run_endpoint_function(
+
+
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 312, in run_endpoint_function
+
+
+    return await dependant.call(**values)
+
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/app/app.py", line 523, in extract_and_return_json
+
+
+    web_json_by_index = await asyncio.get_event_loop().run_in_executor(
+
+
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/concurrent/futures/thread.py", line 58, in run
+
+
+    result = self.fn(*self.args, **self.kwargs)
+
+
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/app/app.py", line 135, in extract_web_sections
+
+
+    web_text = get_data_xml(url)
+
+
+               ^^^^^^^^^^^^^^^^^
+
+
+  File "/app/scraper.py", line 192, in get_data_xml
+
+
+    response = session.get(url, verify=False)
+
+
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/site-packages/requests/sessions.py", line 602, in get
+
+
+    return self.request("GET", url, **kwargs)
+
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/site-packages/requests/sessions.py", line 575, in request
+
+
+    prep = self.prepare_request(req)
+
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "/usr/local/lib/python3.11/site-packages/requests/sessions.py", line 484, in prepare_request
+
+
+    p.prepare(
+
+
+  File "/usr/local/lib/python3.11/site-packages/requests/models.py", line 367, in prepare
+
+
+    self.prepare_url(url, params)
+
+
+  File "/usr/local/lib/python3.11/site-packages/requests/models.py", line 438, in prepare_url
+
+
+    raise MissingSchema(
+
+
+requests.exceptions.MissingSchema: Invalid URL 'Not found url': No scheme supplied. Perhaps you meant https://Not found url?
+ 
+ 
