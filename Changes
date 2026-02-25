@@ -1,0 +1,74 @@
+def find_urls_by_keyword(keyword: str, max_sub_sitemaps: int = 250, polite_sleep: float = 0.2):
+
+    keyword = keyword.lower()
+    sitemap_url = "https://www.chittorgarh.com/sitemap.xml"
+
+    print("\n========== SITEMAP DEBUG START ==========")
+    print("Keyword:", keyword)
+    print("Fetching sitemap:", sitemap_url)
+
+    matches = []
+    scanned = 0
+
+    try:
+        main_xml = fetch_text(None, sitemap_url)
+
+        print("Main sitemap length:", len(main_xml))
+        print("Main sitemap first 500 chars:\n", main_xml[:500])
+
+        if not main_xml.strip().startswith("<?xml"):
+            print("⚠ WARNING: Response is NOT XML. Likely proxy/login page.")
+            print("========== SITEMAP DEBUG END ==========\n")
+            return []
+
+        kind, locs = parse_sitemap(main_xml)
+
+        print("Sitemap type:", kind)
+        print("Total locs found:", len(locs))
+
+    except Exception as e:
+        print("❌ Error fetching main sitemap:", e)
+        print("========== SITEMAP DEBUG END ==========\n")
+        return []
+
+    if kind == "sitemapindex":
+        for sm_url in locs:
+            scanned += 1
+            if scanned > max_sub_sitemaps:
+                break
+
+            time.sleep(polite_sleep)
+
+            try:
+                sub_xml = fetch_text(None, sm_url)
+
+                if not sub_xml.strip().startswith("<?xml"):
+                    print(f"⚠ Sub sitemap not XML: {sm_url}")
+                    continue
+
+                _, sub_locs = parse_sitemap(sub_xml)
+
+                for u in sub_locs:
+                    if keyword in u.lower():
+                        matches.append(u)
+
+            except Exception as e:
+                print(f"[WARN] Could not read sub-sitemap: {sm_url} -> {e}")
+
+    else:
+        for u in locs:
+            if keyword in u.lower():
+                matches.append(u)
+
+    print("Matched URLs:", matches)
+    print("========== SITEMAP DEBUG END ==========\n")
+
+    # remove duplicates
+    seen = set()
+    uniq = []
+    for u in matches:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+
+    return uniq
