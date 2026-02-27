@@ -1,0 +1,503 @@
+# -*- coding: utf-8 -*-
+import re
+import time
+import urllib.parse
+import xml.etree.ElementTree as ET
+from typing import List, Tuple
+
+import requests
+import urllib3
+from lxml import html
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+
+from fastapi import Query, HTTPException
+from fastapi.responses import JSONResponse
+
+
+# =========================
+# PROXY + HEADERS
+# =========================
+#PROXY = "http://172.16.180.43:80"
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  # type: ignore
+
+
+PROXIES = {
+    "http":  "http://USER:PASS@172.16.180.43:80",
+    "https": "http://USER:PASS@172.16.180.43:80",
+}
+
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Edg/121.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Connection": "keep-alive",
+    "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+# =========================
+# SESSION CREATOR
+# =========================
+def create_session() -> requests.Session:
+    session = requests.Session()
+    
+    session.trust_env = False
+
+    retry = Retry(
+        total=5,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+
+    adapter = HTTPAdapter(
+        max_retries=retry,
+        pool_connections=10,
+        pool_maxsize=20,
+    )
+
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    session.headers.update(HEADERS)
+    session.proxies.update(PROXIES)
+
+    return session
+
+# =========================
+# SAFE FETCH
+# =========================
+def fetch_text(session: requests.Session, url: str, timeout: int = 30) -> str:
+    resp = None
+    try:
+        resp = session.get(
+            url,
+            timeout=timeout,
+            verify=False,
+            allow_redirects=True
+        )
+        resp.raise_for_status()
+
+        # Prefer raw bytes and decode ourselves for full control
+        raw = resp.content  # bytes (or None)
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+
+        if raw is None:
+            raise RuntimeError("Empty response (no bytes)")
+
+        if isinstance(raw, bytes):
+            enc = resp.encoding or "utf-8"
+            try:
+                txt = raw.decode(enc, errors="replace")
+            except Exception:
+                txt = raw.decode("utf-8", errors="replace")
+        else:
+            # Extremely rare, but guard anyway
+            txt = resp.text if isinstance(resp.text, str) else str(resp.text)
+
+        if not isinstance(txt, str):
+            raise RuntimeError(f"Decoded payload is not str (type={type(txt).__name__})")
+
+        if not txt.strip():
+            raise RuntimeError(f"Empty response received (Content-Type: {ctype})")
+
+        return txt
+
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Timeout while fetching: {url}")
+
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(f"Blocked by firewall/network: {url}")
+
+    except requests.exceptions.SSLError:
+        raise RuntimeError(f"SSL/TLS issue (proxy intercept?): {url}")
+
+    except Exception as e:
+        # Attach minimal context to help debugging (first 160 chars)
+        snippet = ""
+        try:
+            body = resp.text if (resp is not None and isinstance(resp.text, str)) else ""
+            snippet = body[:160]
+        except Exception:
+            pass
+        ctype = (resp.headers.get("Content-Type") if resp is not None else None)
+        raise RuntimeError(f"{url} -> {e} | ctype={ctype} | body[:160]={snippet}")
+
+# =========================
+# PARSE SITEMAP (NS-SAFE)
+# =========================
+def parse_sitemap(xml_text: str):
+    root = ET.fromstring(xml_text)
+
+    if "}" in root.tag:
+        ns_uri = root.tag.split("}")[0].strip("{")
+        ns = {"sm": ns_uri}
+        loc_elems = root.findall(".//sm:loc", ns)
+    else:
+        loc_elems = root.findall(".//loc")
+
+    locs = [(e.text or "").strip() for e in loc_elems if (e.text or "").strip()]
+    kind = root.tag.split("}")[-1]
+
+    return kind, locs
+
+# =========================================================
+# FUZZY MATCHING HELPERS (OSA edit distance + Jaccard + coverage)
+# =========================================================
+
+_STOPWORDS = {"limited"}  # common suffixes you want ignored
+
+def _canon(s: str) -> str:
+    s = re.sub(r"&amp;", " and ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _normalize_name(name: str) -> str:
+    name = _canon(name).lower()
+    for w in _STOPWORDS:
+        name = re.sub(rf"\b{w}\b\.?", " ", name)
+    name = re.sub(r"[^a-z0-9]+", "-", name)
+    name = re.sub(r"-+", "-", name).strip("-")
+    return name
+
+def _tokens(name: str) -> List[str]:
+    name = _canon(name).lower()
+    toks = re.split(r"[^a-z0-9]+", name)
+    return [t for t in toks if t and t not in _STOPWORDS]
+
+def _looks_like_ipo_detail(path: str) -> bool:
+    if not path.startswith("/ipo/"):
+        return False
+    if "/ipo_" in path or path.endswith(".asp"):
+        return False
+    parts = [p for p in path.split("/") if p]
+    return len(parts) >= 2
+
+def _company_key_from_path(path: str) -> str:
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2:
+        slug = parts[1]
+        slug = re.sub(r"-ipo$", "", slug)
+        return slug
+    return ""
+
+# --- Damerau–Levenshtein (optimal string alignment flavor)
+def _damerau_levenshtein(a: str, b: str) -> int:
+    len_a, len_b = len(a), len(b)
+    if a == b:
+        return 0
+    if len_a == 0:
+        return len_b
+    if len_b == 0:
+        return len_a
+
+    INF = len_a + len_b
+    da = {}
+    d = [[0] * (len_b + 2) for _ in range(len_a + 2)]
+    d[0][0] = INF
+    for i in range(len_a + 1):
+        d[i + 1][0] = INF
+        d[i + 1][1] = i
+    for j in range(len_b + 1):
+        d[0][j + 1] = INF
+        d[1][j + 1] = j
+
+    for i in range(1, len_a + 1):
+        db = 0
+        for j in range(1, len_b + 1):
+            i1 = da.get(b[j - 1], 0)
+            j1 = db
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            if cost == 0:
+                db = j
+            d[i + 1][j + 1] = min(
+                d[i][j] + cost,                             # substitution
+                d[i + 1][j] + 1,                            # insertion
+                d[i][j + 1] + 1,                            # deletion
+                d[i1][j1] + (i - i1 - 1) + 1 + (j - j1 - 1) # transposition
+            )
+        da[a[i - 1]] = i
+
+    return d[len_a + 1][len_b + 1]
+
+def _norm_edit_sim(a: str, b: str) -> float:
+    if not a and not b:
+        return 1.0
+    dist = _damerau_levenshtein(a, b)
+    denom = max(1, max(len(a), len(b)))
+    return 1.0 - (dist / denom)
+
+def _trigrams(s: str) -> List[str]:
+    s2 = f"  {s}  "
+    return [s2[i:i+3] for i in range(len(s2) - 2)]
+
+def _jaccard_trigram(a: str, b: str) -> float:
+    A, B = set(_trigrams(a)), set(_trigrams(b))
+    if not A and not B:
+        return 1.0
+    inter = len(A & B)
+    union = len(A | B)
+    return (inter / union) if union else 0.0
+
+def _path_segments(path: str) -> List[str]:
+    p = path.lower()
+    segs = re.split(r"[\/\-\._]+", p)
+    return [s for s in segs if s]
+
+def _min_edit_distance_to_any(token: str, segments: List[str]) -> int:
+    best = len(token)
+    for s in segments:
+        if abs(len(s) - len(token)) > 2:
+            continue
+        d = _damerau_levenshtein(token, s)
+        if d < best:
+            best = d
+            if best == 0:
+                break
+    return best
+
+def _fuzzy_token_coverage(company_name: str, path: str, k: int = 1) -> float:
+    toks = _tokens(company_name)
+    segs = _path_segments(path)
+    if not toks:
+        return 0.0
+    hits = 0
+    for t in toks:
+        if any(t in s for s in segs):
+            hits += 1
+        else:
+            if _min_edit_distance_to_any(t, segs) <= k:
+                hits += 1
+    return hits / len(toks)
+
+def _score_path(company_name: str, path: str) -> float:
+    base_slug = _normalize_name(company_name)
+    target_path = f"/ipo/{base_slug}-ipo"
+    key = _company_key_from_path(path)
+
+    edit_sim = _norm_edit_sim(base_slug, key)
+    tri_sim = _jaccard_trigram(path, target_path)
+    coverage = _fuzzy_token_coverage(company_name, path, k=1)
+
+    score = 0.60 * edit_sim + 0.25 * tri_sim + 0.15 * coverage
+    return score
+
+def _rank_ipo_urls(company_name: str, ipo_urls: List[str]) -> List[Tuple[str, float]]:
+    ranked: List[Tuple[str, float]] = []
+    for url in ipo_urls:
+        path = urllib.parse.urlparse(url).path.lower()
+        if not _looks_like_ipo_detail(path):
+            continue
+        ranked.append((url, _score_path(company_name, path)))
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return ranked
+
+def _dynamic_accept(score: float, tok_cov: float, base_slug: str) -> bool:
+    L = max(1, len(base_slug))
+    slack = 0.0
+    if L <= 6:
+        slack = 0.05
+    elif L <= 10:
+        slack = 0.03
+    return (score >= 0.83 - slack) or (score >= 0.78 - slack and tok_cov >= 0.80)
+
+# =========================================================
+# SITEMAP WALK (ALL IPO URL CANDIDATES) + CACHE
+# =========================================================
+__IPO_CACHE = {"ts": 0.0, "urls": []}
+__IPO_CACHE_TTL = 6 * 60 * 60  # 6 hours
+
+def _gather_ipo_urls(session: requests.Session, max_sub_sitemaps: int = 250, polite_sleep: float = 0.2) -> List[str]:
+    root_sitemap = f"https://www.chittorgarh.com/sitemap.xml?"
+    matches: List[str] = []
+    scanned = 0
+
+    main_xml = fetch_text(session, root_sitemap)
+    kind, locs = parse_sitemap(main_xml)
+
+    if kind == "sitemapindex":
+        for sm_url in locs:
+            scanned += 1
+            if scanned > max_sub_sitemaps:
+                break
+            time.sleep(polite_sleep)
+            try:
+                sub_xml = fetch_text(session, sm_url)
+                _, sub_locs = parse_sitemap(sub_xml)
+                for u in sub_locs:
+                    if "/ipo/" in (u or "").lower():
+                        matches.append(u)
+            except Exception:
+                continue
+    else:
+        for u in locs:
+            if "/ipo/" in (u or "").lower():
+                matches.append(u)
+
+    # de-dup preserving order
+    seen = set()
+    uniq: List[str] = []
+    for u in matches:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return uniq
+
+def _get_all_ipo_urls_cached() -> List[str]:
+    now = time.time()
+    if (now - __IPO_CACHE["ts"]) < __IPO_CACHE_TTL and __IPO_CACHE["urls"]:
+        return __IPO_CACHE["urls"]
+    with create_session() as session:
+        urls = _gather_ipo_urls(session)
+    __IPO_CACHE["ts"] = now
+    __IPO_CACHE["urls"] = urls
+    return urls
+
+# =========================================================
+# FUZZY GET IPO URL (replaces keyword-only approach)
+# =========================================================
+def get_url(query: str) -> str:
+    """
+    Fuzzy, typo-tolerant resolver:
+      - Collects all IPO URLs from sitemap (cached for 6h)
+      - Ranks using OSA edit-sim + trigram Jaccard + token coverage
+      - Applies dynamic acceptance threshold
+      - Falls back to quick keyword scan if no acceptable fuzzy match
+    """
+    try:
+        company_name = query  # keep original (stopwords handled downstream)
+        candidates = _get_all_ipo_urls_cached()
+        ranked = _rank_ipo_urls(company_name, candidates)
+
+        if not ranked:
+            # Fallback: retain your earlier exact keyword scan behavior
+            q = query.lower().replace("limited", "").strip().replace(" ", "-")
+            keyword = f"ipo/{q}"
+            # quick inline finder using a one-off session
+            with create_session() as session:
+                # reuse original find_urls_by_keyword logic minimally
+                main = fetch_text(session, f"https://www.chittorgarh.com/sitemap.xml?_={int(time.time())}")
+                kind, locs = parse_sitemap(main)
+                matches = []
+                if kind == "sitemapindex":
+                    for sm in locs:
+                        time.sleep(0.2)
+                        try:
+                            sub_xml = fetch_text(session, sm)
+                            _, sub_locs = parse_sitemap(sub_xml)
+                            for u in sub_locs:
+                                if keyword in u.lower():
+                                    matches.append(u)
+                        except Exception:
+                            continue
+                else:
+                    for u in locs:
+                        if keyword in u.lower():
+                            matches.append(u)
+                uniq = list(dict.fromkeys(matches))
+                return uniq[0] if uniq else "Not found url"
+
+        # Evaluate best candidate with acceptance guard
+        best_url, best_score = ranked[0]
+        path = urllib.parse.urlparse(best_url).path.lower()
+        base_slug = _normalize_name(company_name)
+        tok_cov = _fuzzy_token_coverage(company_name, path, k=1)
+        accepted = _dynamic_accept(best_score, tok_cov, base_slug)
+
+        return best_url if accepted else "Not found url"
+
+    except Exception as e:
+        return f"URL lookup error: {e}"
+
+# =========================================================
+# EXTRACT DATA FROM IPO PAGE (NO SELENIUM)
+# =========================================================
+def get_data_xml(url: str) -> str:
+    if url == "Not found url":
+        return "url not found."
+
+    try:
+        with create_session() as session:
+            html_text = fetch_text(session, url)
+
+        tree = html.fromstring(html_text)
+        divs = tree.xpath("//div[contains(@class,'card') and contains(@class,'p-3')]")
+
+        if not divs:
+            return "No data found. Page structure changed or blocked."
+
+        output = []
+        for div in divs:
+            heading = div.xpath(".//h2/text()")
+            text = div.text_content().strip()
+            if heading:
+                output.append(f"-----{heading[0].strip()}-----\n{text}\n")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        return f"Error extracting data: {e}"
+
+def full_exec_requests(query: str) -> str:
+    url = get_url(query)
+    if url.startswith("URL lookup error"):
+        return url
+    return get_data_xml(url)
+
+
+
+# ---------- TEST ENDPOINT (POST): end‑to‑end resolve + extract page text ----------
+from fastapi import Body, HTTPException
+from fastapi.responses import JSONResponse
+
+# Create an app only if one doesn't already exist (so this can be pasted at file end safely)
+try:  # noqa: SIM105
+    app = FastAPI() # type: ignore  # noqa: F821
+except NameError:
+    from fastapi import FastAPI
+    app = FastAPI(title="IPO URL Fuzzy Resolver - Test")
+
+@app.post("/test/ipo/text")
+def test_text_post(
+    payload: dict = Body(..., example={"company": "Bonfiglioli Transmissions Limited"})
+):
+    """
+    POST body:
+      { "company": "Company Name" }
+
+    Returns:
+      - resolved URL (or "Not found url")
+      - extracted sections/text (or error)
+      - accepted flag (True if a URL was resolved)
+      - elapsed_ms for basic timing
+    """
+    try:
+        company = payload.get("company") if isinstance(payload, dict) else None
+        if not company or not isinstance(company, str) or not company.strip():
+            raise HTTPException(status_code=400, detail="Provide 'company' in JSON body as a non-empty string.")
+
+        start = time.time()
+        url = get_url(company.strip())
+        content = get_data_xml(url)
+        elapsed_ms = int((time.time() - start) * 1000)
+
+        return JSONResponse({
+            "company": company.strip(),
+            "resolved_url": url,
+            "accepted": (url != "Not found url"),
+            "content": content,
+            "elapsed_ms": elapsed_ms
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
